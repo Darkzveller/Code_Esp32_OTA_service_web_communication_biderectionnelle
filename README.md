@@ -1,12 +1,12 @@
 # ESP32 maitre - OTA + console Web Wi-Fi (sans Telnet)
 
-Projet PlatformIO ESP32 / Arduino. Le `main.cpp` reste minimal :
+Projet PlatformIO ESP32 / Arduino. Le `main.cpp` contient un exemple de reception des commandes saisies dans le navigateur :
 
 ```cpp
 #include <Arduino.h>
 #include "OTA.h"
 void setup() { Serial.begin(115200); setupOTA(); }
-void loop() {}
+void loop() { String cmd; if (otaReadCommand(cmd)) otaLog("Recu : " + cmd); delay(10); }
 ```
 
 ## Demarrage
@@ -23,7 +23,9 @@ void loop() {}
 
 - Affichage des derniers 8 Kio de journaux de `otaLog()` ; actualisation toutes les secondes.
 - Reconnexion automatique de la page apres une coupure temporaire du Wi-Fi.
-- Commandes : `help`, `status`, `ip`, `heap`, `uptime`, `clear`, `restart`.
+- Commandes integrees : `help`, `status`, `ip`, `heap`, `uptime`, `clear`, `restart`.
+- Les autres commandes (`bonjour`, `moteur_on`, `moteur_off`, etc.) sont ajoutees a une file FreeRTOS et recuperees dans `main.cpp` par `otaReadCommand(commande)`.
+- File de 10 commandes maximum ; si elle est pleine, la requete recoit une erreur HTTP 503. Les commandes ont une longueur limitee a 64 octets.
 - La sortie est dupliquee sur le moniteur serie USB pour chaque `otaLog()`.
 
 **Important :** `Serial.print()` et `Serial.println()` ecrits ailleurs dans votre programme ne
@@ -74,3 +76,28 @@ lib/OTA/
 src/main.cpp
 platformio.ini
 ```
+
+## Recuperer les commandes dans `main.cpp`
+
+Par exemple, saisir `bonjour` dans la barre de commande de la console Web :
+
+```cpp
+void loop()
+{
+    String commande;
+    if (otaReadCommand(commande))
+    {
+        otaLog("Recu : " + commande);
+        if (commande == "bonjour")
+            otaLog("Salut depuis l'ESP32 !");
+    }
+    delay(10);
+}
+```
+
+`otaReadCommand()` est non bloquant et consomme une commande par appel.
+Les commandes systeme (`status`, `restart`, etc.) sont gerees directement par `OTA.cpp` ; elles ne sont pas envoyees au `main.cpp`.
+Les commandes utilisateur conservent leur casse ; par exemple `Bonjour` est different de `bonjour`.
+
+Si l'application a beaucoup de traitements, appeler regulierement `otaReadCommand()` dans
+`loop()` pour eviter de remplir la file. La boucle reste libre pour le reste du programme.

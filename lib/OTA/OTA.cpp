@@ -4,6 +4,7 @@
 #include <ArduinoOTA.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <freertos/queue.h>
 
 #include "WebTerminalPage.h"
 #include "terminal_credentials.h"
@@ -13,9 +14,17 @@ namespace
 {
     constexpr const char* OTA_HOSTNAME = "espmaitre";
     constexpr size_t MAX_LOG_CHARS = 8192;
+    constexpr size_t MAX_COMMAND_CHARS = 64;
+    constexpr UBaseType_t COMMAND_QUEUE_CAPACITY = 10;
     constexpr uint32_t RECONNECT_INTERVAL_MS = 15000;
 
     WebServer webServer(80);
+    struct PendingCommand
+    {
+        char text[MAX_COMMAND_CHARS + 1];
+    };
+
+    QueueHandle_t commandQueue = nullptr;
     SemaphoreHandle_t logMutex = nullptr;
     String logText;
     uint32_t logRevision = 0;
@@ -75,8 +84,10 @@ namespace
         if (!requireAuth()) return;
         String cmd = webServer.arg("cmd");
         cmd.trim();
-        cmd.toLowerCase();
-        if (cmd.length() > 64)
+        // Les commandes utilisateur conservent leur casse et leur contenu.
+        String builtInCommand = cmd;
+        builtInCommand.toLowerCase();
+        if (cmd.length() > MAX_COMMAND_CHARS)
         {
             webServer.send(400, "text/plain", "Commande trop longue");
             return;
@@ -88,11 +99,12 @@ namespace
         }
 
         otaLog("> " + cmd);
-        if (cmd == "help" || cmd == "aide")
+        if (builtInCommand == "help" || builtInCommand == "aide")
         {
-            otaLog("Commandes : help, status, ip, heap, uptime, clear, restart");
+            otaLog("Commandes systeme : help, status, ip, heap, uptime, clear, restart");
+            otaLog("Toute autre commande est transmise a loop() via otaReadCommand().");
         }
-        else if (cmd == "status" || cmd == "etat")
+        else if (builtInCommand == "status" || builtInCommand == "etat")
         {
             otaLog("Wi-Fi : " + String(WiFi.status() == WL_CONNECTED ? "connecte" : "deconnecte"));
             otaLog("IP : " + WiFi.localIP().toString());
@@ -100,22 +112,35 @@ namespace
             otaLog("Memoire libre : " + String(ESP.getFreeHeap()) + " octets");
             otaLog("Uptime : " + String(millis() / 1000UL) + " secondes");
         }
-        else if (cmd == "ip")
+        else if (builtInCommand == "ip")
             otaLog("IP : " + WiFi.localIP().toString());
-        else if (cmd == "heap")
+        else if (builtInCommand == "heap")
             otaLog("Memoire libre : " + String(ESP.getFreeHeap()) + " octets");
-        else if (cmd == "uptime")
+        else if (builtInCommand == "uptime")
             otaLog("Uptime : " + String(millis() / 1000UL) + " secondes");
-        else if (cmd == "clear")
+        else if (builtInCommand == "clear")
             clearLogs();
-        else if (cmd == "restart")
+        else if (builtInCommand == "restart")
         {
             otaLog("Redemarrage demande. La console va se deconnecter.");
             restartAt = millis() + 1000UL;
             restartPending = true;
         }
         else
-            otaLog("Commande inconnue : " + cmd + " (taper help)");
+        {
+            // Les commandes personnalisees sont transferees vers main.cpp via
+            // une file FreeRTOS : aucun code applicatif ne s'execute dans webTask().
+            PendingCommand item{};
+            cmd.toCharArray(item.text, sizeof(item.text));
+            if (commandQueue == nullptr ||
+                xQueueSend(commandQueue, &item, 0) != pdTRUE)
+            {
+                otaLog("ERREUR : file de commandes pleine ou indisponible");
+                webServer.send(503, "text/plain", "File de commandes pleine");
+                return;
+            }
+            // otaLog("Commande envoyee au main : " + cmd);
+        }
 
         setNoCache();
         webServer.send(200, "text/plain", "OK");
@@ -200,12 +225,29 @@ void otaLog(const String& message)
     xSemaphoreGive(logMutex);
 }
 
+// Recupere une commande personnalisee envoyee via la console Web.
+// Retourne false lorsque la file est vide (ne bloque pas loop()).
+bool otaReadCommand(String& command)
+{
+    if (commandQueue == nullptr) return false;
+    PendingCommand next{};
+    if (xQueueReceive(commandQueue, &next, 0) != pdTRUE) return false;
+    command = next.text;
+    return true;
+}
+
 void setupOTA()
 {
     logMutex = xSemaphoreCreateMutex();
     if (logMutex == nullptr)
     {
         Serial.println("Erreur critique : allocation de la console impossible");
+        return;
+    }
+    commandQueue = xQueueCreate(COMMAND_QUEUE_CAPACITY, sizeof(PendingCommand));
+    if (commandQueue == nullptr)
+    {
+        Serial.println("Erreur critique : allocation de la file de commandes impossible");
         return;
     }
     logText.reserve(MAX_LOG_CHARS + 64);

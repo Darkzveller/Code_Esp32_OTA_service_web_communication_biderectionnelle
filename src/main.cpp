@@ -38,13 +38,13 @@ void loop()
     compteur++;
 
     // Afficher un entier
-    otaLog("Compteur : " + String(compteur));
+    // otaLog("Compteur : " + String(compteur));
 
-    // Afficher un float avec 2 decimales
-    otaLog("Temperature : " + String(temperature, 2) + " C");
+    // // Afficher un float avec 2 decimales
+    // otaLog("Temperature : " + String(temperature, 2) + " C");
 
-    // Afficher un booleen
-    otaLog("Moteur : " + String(moteurActif ? "ON" : "OFF"));
+    // // Afficher un booleen
+    // otaLog("Moteur : " + String(moteurActif ? "ON" : "OFF"));
 
-    delay(1000);
+    // delay(1000);
 }

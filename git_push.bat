@@ -1,2 +1,2 @@
 echo off
-git status && git add . && git commit -m "envoyé de donner bidirectionnelle" && git push
+git status && git add . && git commit -m "MAJ readme" && git push
